@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Buscador</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1c2330; --muted: #667085;
+    --line: #d9dde5; --accent: #2457d6; --accent-text: #ffffff;
+    --ok: #12805c; --warn: #b25e09; --off: #667085; --danger: #c0362c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --card: #1b2029; --text: #e8ebf1; --muted: #98a2b3;
+      --line: #2e3542; --accent: #7aa2ff; --accent-text: #0d1320;
+      --ok: #4fd1a1; --warn: #f0b060; --off: #98a2b3; --danger: #ff8a80;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; align-items: center; justify-content: center; padding: 16px;
+  }
+  main { width: 100%; max-width: 560px; }
+  h1 { font-size: 40px; font-weight: 600; letter-spacing: -0.02em; text-align: center; margin: 0 0 24px; }
+  form { display: flex; gap: 8px; }
+  input[type=search] {
+    flex: 1; min-width: 0; padding: 12px 16px; font: inherit; color: var(--text);
+    background: var(--card); border: 1px solid var(--line); border-radius: 24px; outline: none;
+  }
+  input[type=search]:focus { border-color: var(--accent); }
+  button, a.btn {
+    font: inherit; font-weight: 600; padding: 12px 18px; border-radius: 24px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--card); color: var(--text); text-decoration: none;
+    display: inline-block; text-align: center;
+  }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  button.danger { color: var(--danger); }
+  button:disabled { opacity: .5; cursor: default; }
+  #panel { display: none; background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 24px; }
+  #panel h2 { margin: 0 0 4px; font-size: 20px; }
+  .state { display: flex; align-items: center; gap: 8px; font-weight: 600; margin: 12px 0 4px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--off); }
+  .dot.running { background: var(--ok); }
+  .dot.pending, .dot.stopping { background: var(--warn); }
+  .meta { color: var(--muted); font-size: 14px; min-height: 21px; }
+  .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 20px; }
+  .actions a.btn { grid-column: 1 / -1; }
+  #msg { color: var(--danger); font-size: 14px; min-height: 21px; margin-top: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <section id="search">
+    <h1>Buscador</h1>
+    <form id="f" autocomplete="off">
+      <input id="q" type="search" placeholder="Buscar en la web" autofocus autocomplete="off" spellcheck="false">
+      <button class="primary" type="submit">Buscar</button>
+    </form>
+  </section>
+
+  <section id="panel">
+    <h2>Servidor remoto</h2>
+    <div class="state"><span id="dot" class="dot"></span><span id="state">Consultando…</span></div>
+    <div id="meta" class="meta"></div>
+    <div class="actions">
+      <button id="start" class="primary" disabled>Iniciar servidor</button>
+      <button id="stop" class="danger" disabled>Cerrar servidor</button>
+      <a class="btn" id="open" href="https://claude.ai/code" target="_blank" rel="noopener">Abrir Claude</a>
+    </div>
+    <div id="msg"></div>
+  </section>
+</main>
+<script>
+(function () {
+  // Pega aqui la Function URL de tu Lambda (termina en .on.aws/). No es secreta.
+  var API_URL = 'https://2qpqp25kxdrdfuuwzwnfz22gbm0idfrk.lambda-url.us-east-2.on.aws/';
+
+  var secret = null, timer = null;
+  var READY = API_URL.indexOf('https://') === 0;
+  var ENDPOINT = API_URL.replace(/\/+$/, '') + '/api';
+  var $ = function (id) { return document.getElementById(id); };
+  var LABELS = {
+    running: 'Encendido', stopped: 'Apagado', pending: 'Iniciando…',
+    stopping: 'Apagando…', 'shutting-down': 'Eliminando…', terminated: 'Eliminado'
+  };
+
+  function api(action, password) {
+    if (!READY) return Promise.reject(new Error('sin configurar'));
+    // text/plain evita la consulta previa de CORS; el servidor lo lee como JSON
+    return fetch(ENDPOINT, {
+      method: 'POST',
+      headers: { 'content-type': 'text/plain' },
+      body: JSON.stringify({ password: password, action: action })
+    }).then(function (r) {
+      return r.json().then(function (j) { return { status: r.status, data: j }; });
+    });
+  }
+
+  function render(d) {
+    $('dot').className = 'dot ' + d.state;
+    $('state').textContent = LABELS[d.state] || d.state;
+    var meta = '';
+    if (d.state === 'running') {
+      var left = Math.max(0, d.max_minutes - d.minutes_on);
+      meta = 'Lleva ' + d.minutes_on + ' min encendido. Se apaga solo en ' + left + ' min.';
+      if (d.ip) meta += ' IP: ' + d.ip;
+    } else if (d.state === 'stopped') {
+      meta = 'No está gastando créditos de cómputo.';
+    }
+    $('meta').textContent = meta;
+    $('start').disabled = d.state !== 'stopped';
+    $('stop').disabled = !(d.state === 'running' || d.state === 'pending');
+    clearTimeout(timer);
+    var wait = (d.state === 'pending' || d.state === 'stopping') ? 5000 : 30000;
+    timer = setTimeout(refresh, wait);
+  }
+
+  function refresh() {
+    api('status', secret).then(function (r) {
+      if (r.status === 200) { $('msg').textContent = ''; render(r.data); }
+      else { $('msg').textContent = 'No se pudo consultar el estado.'; }
+    }).catch(function () { $('msg').textContent = 'Sin conexión con el panel.'; });
+  }
+
+  function act(action) {
+    $('start').disabled = true; $('stop').disabled = true; $('msg').textContent = '';
+    api(action, secret).then(function (r) {
+      if (r.status === 200) render(r.data);
+      else if (r.status === 409) { $('msg').textContent = 'Todavía se está apagando. Espera un momento.'; render(r.data); }
+      else { $('msg').textContent = 'No se pudo completar la acción.'; refresh(); }
+    }).catch(function () { $('msg').textContent = 'Sin conexión con el panel.'; });
+  }
+
+  $('f').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var q = $('q').value;
+    if (!q.trim()) return;
+    api('status', q).then(function (r) {
+      if (r.status === 200) {
+        secret = q; $('q').value = '';
+        $('search').style.display = 'none'; $('panel').style.display = 'block';
+        document.title = 'Servidor remoto';
+        render(r.data);
+      } else {
+        location.href = 'https://duckduckgo.com/?q=' + encodeURIComponent(q);
+      }
+    }).catch(function () {
+      location.href = 'https://duckduckgo.com/?q=' + encodeURIComponent(q);
+    });
+  });
+  $('start').addEventListener('click', function () { act('start'); });
+  $('stop').addEventListener('click', function () { act('stop'); });
+})();
+</script>
+</body>
+</html>
